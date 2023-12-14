@@ -1,6 +1,6 @@
 use fastwebsockets::upgrade::upgrade;
-use fastwebsockets::{OpCode, FragmentCollector, FragmentCollectorRead, WebSocket, Role, WebSocketError, handshake};
-use hyper::{Body, Client, Request, Response, Server, StatusCode, upgrade::Upgraded};
+use fastwebsockets::{OpCode, FragmentCollectorRead, WebSocket, WebSocketError, handshake};
+use hyper::{Body, Client, Request, Response, Server, upgrade::Upgraded};
 use hyper::header::{UPGRADE,CONNECTION};
 use hyper::service::{make_service_fn, service_fn};
 use std::convert::Infallible;
