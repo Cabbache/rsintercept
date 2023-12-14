@@ -1,0 +1,10 @@
+[package]
+name = "wsproxy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.75"
+fastwebsockets = { version = "0.5.0", features = ["upgrade", "unstable-split"] }
+hyper = { version = "0.14.26", features = ["http1", "server", "client", "full"] }
+tokio = { version = "1.34.0", features = ["sync", "macros", "rt-multi-thread"] }
