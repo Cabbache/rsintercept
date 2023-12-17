@@ -7,11 +7,35 @@ use hyper::{upgrade::Upgraded, Body, Client, Request, Response, Server};
 use std::convert::Infallible;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use tokio::net::TcpStream;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+use prometheus::{register_counter_vec, CounterVec, Encoder, TextEncoder, Opts};
+use warp::Filter;
 
 struct Config {
 	domain: String,
+}
+
+struct Metrics {
+	http_requests_total: CounterVec,
+	websocket_messages_total: CounterVec,
+}
+
+impl Metrics {
+    fn new() -> Metrics {
+        let http_requests_total_opts = Opts::new("http_requests_total", "Total HTTP requests").namespace("my_app");
+        let http_requests_total = register_counter_vec!(http_requests_total_opts, &["path"]).unwrap();
+
+        let websocket_messages_total_opts = Opts::new("websocket_messages_total", "Total WebSocket messages").namespace("my_app");
+        let websocket_messages_total = register_counter_vec!(websocket_messages_total_opts, &["path", "method"]).unwrap();
+
+        Metrics {
+            http_requests_total,
+            websocket_messages_total,
+        }
+    }
 }
 
 async fn connect() -> Result<WebSocket<Upgraded>> {
@@ -46,7 +70,13 @@ where
 	}
 }
 
-async fn handle(req: Request<Body>, config: Arc<Config>) -> Result<Response<Body>, Infallible> {
+async fn handle(req: Request<Body>, config: Arc<Config>, metrics: Arc<Mutex<Metrics>>) -> Result<Response<Body>, Infallible> {
+	{
+			let metrics = metrics.lock().await;
+			metrics.http_requests_total.with_label_values(&[req.uri().path()]).inc();
+			// ... other code ...
+	}
+
 	if is_websocket_request(&req) {
 		server_upgrade(req).await.or(Ok(Response::default()))
 	} else {
@@ -156,16 +186,29 @@ async fn main() {
 		domain: "example.com".to_string(),
 	});
 
+	let metrics = Arc::new(Mutex::new(Metrics::new()));
+	let prometheus_route = warp::path("metrics").map(move || {
+       let encoder = TextEncoder::new();
+        let metric_families = prometheus::gather();
+        let mut buffer = Vec::new();
+        encoder.encode(&metric_families, &mut buffer).unwrap();
+        Response::builder()
+            .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+            .body(buffer)
+            .unwrap()
+	});
+
 	let addr = SocketAddr::from(([0, 0, 0, 0], 8765));
 	let make_service = make_service_fn(move |_conn| {
 		let config_clone = config.clone();
-		async move { Ok::<_, Infallible>(service_fn(move |req| handle(req, config_clone.clone()))) }
+		let metrics_clone = metrics.clone();
+		async move { Ok::<_, Infallible>(service_fn(move |req| handle(req, config_clone.clone(), Arc::clone(&metrics_clone)))) }
 	});
 
 	let server = Server::bind(&addr).serve(make_service);
 	println!("Server listening on ws://0.0.0.0:8765");
 
-	if let Err(e) = server.await {
-		eprintln!("Server error: {}", e);
-	}
+	let warp_server = warp::serve(prometheus_route).run(([0, 0, 0, 0], 9090));
+	println!("Prometheus exporter listening on ws://0.0.0.0:9090");
+	tokio::join!(server, warp_server);
 }

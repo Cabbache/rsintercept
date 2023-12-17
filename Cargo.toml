@@ -7,4 +7,6 @@ edition = "2021"
 anyhow = "1.0.75"
 fastwebsockets = { version = "0.5.0", features = ["upgrade", "unstable-split"] }
 hyper = { version = "0.14.26", features = ["http1", "server", "client", "full"] }
+prometheus = "0.13.3"
 tokio = { version = "1.34.0", features = ["sync", "macros", "rt-multi-thread"] }
+warp = "0.3.6"
