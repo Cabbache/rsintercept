@@ -186,8 +186,11 @@ async fn server_upgrade(
 									serde_json::from_str(text).map_err(anyhow::Error::new)
 								});
 
-						let mut labels: [String; 3] =
-							[req_uri.path().to_string(), "".to_string(), "false".to_string()];
+						let mut labels: [String; 3] = [
+							req_uri.path().to_string(),
+							"".to_string(),
+							"false".to_string(),
+						];
 						match json_result {
 							Ok(value) => {
 								labels[1] = value["method"].as_str().unwrap_or("").to_string();
