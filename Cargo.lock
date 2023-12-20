@@ -1138,6 +1138,7 @@ dependencies = [
  "fastwebsockets",
  "hyper",
  "prometheus",
+ "serde_json",
  "tokio",
  "warp",
 ]

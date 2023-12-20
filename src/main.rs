@@ -4,14 +4,15 @@ use fastwebsockets::{handshake, FragmentCollectorRead, OpCode, WebSocket, WebSoc
 use hyper::header::{CONNECTION, UPGRADE};
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{upgrade::Upgraded, Body, Client, Request, Response, Server};
+use serde_json::Value;
 use std::convert::Infallible;
 use std::future::Future;
 use std::net::SocketAddr;
-use tokio::net::TcpStream;
 use std::sync::Arc;
+use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
-use prometheus::{register_counter_vec, CounterVec, Encoder, TextEncoder, Opts};
+use prometheus::{register_counter_vec, CounterVec, Encoder, Opts, TextEncoder};
 use warp::Filter;
 
 struct Config {
@@ -19,31 +20,51 @@ struct Config {
 }
 
 struct Metrics {
-	http_requests_total: CounterVec,
+	non_websocket_total: CounterVec,
 	websocket_messages_total: CounterVec,
+	websocket_sessions_total: CounterVec,
 }
 
 impl Metrics {
-    fn new() -> Metrics {
-        let http_requests_total_opts = Opts::new("http_requests_total", "Total HTTP requests").namespace("my_app");
-        let http_requests_total = register_counter_vec!(http_requests_total_opts, &["path"]).unwrap();
+	fn new() -> Metrics {
+		let namespace = "rs_intercept";
 
-        let websocket_messages_total_opts = Opts::new("websocket_messages_total", "Total WebSocket messages").namespace("my_app");
-        let websocket_messages_total = register_counter_vec!(websocket_messages_total_opts, &["path", "method"]).unwrap();
+		let non_websocket_total = register_counter_vec!(
+			Opts::new(
+				"non_websocket_total",
+				"Total HTTP requests forwarded that were not websocket",
+			)
+			.namespace(namespace),
+			&["path"]
+		)
+		.unwrap();
 
-        Metrics {
-            http_requests_total,
-            websocket_messages_total,
-        }
-    }
+		let websocket_messages_total = register_counter_vec!(
+			Opts::new("websocket_messages_total", "Total WebSocket messages").namespace(namespace),
+			&["path", "method", "jsonvalid"]
+		)
+		.unwrap();
+
+		let websocket_sessions_total = register_counter_vec!(
+			Opts::new("websocket_sessions_total", "Total WebSocket sessions").namespace(namespace),
+			&["path"]
+		)
+		.unwrap();
+
+		Metrics {
+			non_websocket_total,
+			websocket_messages_total,
+			websocket_sessions_total,
+		}
+	}
 }
 
-async fn connect() -> Result<WebSocket<Upgraded>> {
+async fn connect_ws_upstream(req: Request<Body>) -> Result<WebSocket<Upgraded>> {
 	let stream = TcpStream::connect("172.67.171.72:80").await?;
 
 	let req = Request::builder()
 		.method("GET")
-		.uri("/")
+		.uri(req.uri().path())
 		.header("Host", "ws.ifelse.io")
 		.header(UPGRADE, "websocket")
 		.header(CONNECTION, "upgrade")
@@ -54,7 +75,6 @@ async fn connect() -> Result<WebSocket<Upgraded>> {
 		.header("Sec-WebSocket-Version", "13")
 		.body(Body::empty())?;
 
-	println!("ok");
 	let (ws, _) = handshake::client(&SpawnExecutor, req, stream).await?;
 	Ok(ws)
 }
@@ -70,24 +90,36 @@ where
 	}
 }
 
-async fn handle(req: Request<Body>, config: Arc<Config>, metrics: Arc<Mutex<Metrics>>) -> Result<Response<Body>, Infallible> {
+async fn handle(
+	req: Request<Body>,
+	config: Arc<Config>,
+	metrics: Arc<Mutex<Metrics>>,
+) -> Result<Response<Body>, Infallible> {
+	let is_websocket = req.headers().contains_key("Sec-WebSocket-Key");
 	{
-			let metrics = metrics.lock().await;
-			metrics.http_requests_total.with_label_values(&[req.uri().path()]).inc();
-			// ... other code ...
+		let metrics = metrics.lock().await;
+		if is_websocket {
+			metrics
+				.websocket_sessions_total
+				.with_label_values(&[req.uri().path()])
+				.inc();
+		} else {
+			metrics
+				.non_websocket_total
+				.with_label_values(&[req.uri().path()])
+				.inc();
+		}
 	}
 
-	if is_websocket_request(&req) {
-		server_upgrade(req).await.or(Ok(Response::default()))
+	if is_websocket {
+		server_upgrade(req, metrics)
+			.await
+			.or(Ok(Response::default()))
 	} else {
 		relay_request(req, &config.domain)
 			.await
 			.or(Ok(Response::default()))
 	}
-}
-
-fn is_websocket_request(req: &Request<Body>) -> bool {
-	req.headers().contains_key("Sec-WebSocket-Key")
 }
 
 async fn relay_request(
@@ -111,10 +143,13 @@ async fn relay_request(
 	client.request(forwarded_req).await
 }
 
-async fn server_upgrade(mut req: Request<Body>) -> Result<Response<Body>> {
+async fn server_upgrade(
+	mut req: Request<Body>,
+	metrics: Arc<Mutex<Metrics>>,
+) -> Result<Response<Body>> {
 	let (response, incoming_fut) = upgrade(&mut req)?;
-
-	let mut outgoing_ws = connect().await.unwrap();
+	let req_uri = req.uri().clone();
+	let mut outgoing_ws = connect_ws_upstream(req).await.unwrap();
 
 	tokio::spawn(async move {
 		let mut incoming_ws = incoming_fut.await.unwrap();
@@ -132,6 +167,7 @@ async fn server_upgrade(mut req: Request<Body>) -> Result<Response<Body>> {
 		let mut incoming_rx = FragmentCollectorRead::new(incoming_rx);
 		let mut outgoing_rx = FragmentCollectorRead::new(outgoing_rx);
 
+		//from client to upstream
 		tokio::spawn(async move {
 			while let Ok(frame) = incoming_rx
 				.read_frame::<_, WebSocketError>(&mut move |_| async {
@@ -139,11 +175,39 @@ async fn server_upgrade(mut req: Request<Body>) -> Result<Response<Body>> {
 				})
 				.await
 			{
-				println!("Received a frame (user)");
-				println!("{:?}", std::str::from_utf8(&frame.payload));
+				println!("Received a frame from user");
 				match frame.opcode {
 					OpCode::Close => break,
 					OpCode::Text | OpCode::Binary => {
+						let json_result: Result<Value, anyhow::Error> =
+							std::str::from_utf8(&frame.payload)
+								.map_err(anyhow::Error::new)
+								.and_then(|text| {
+									serde_json::from_str(text).map_err(anyhow::Error::new)
+								});
+
+						let mut labels: [String; 3] =
+							[req_uri.path().to_string(), "".to_string(), "false".to_string()];
+						match json_result {
+							Ok(value) => {
+								labels[1] = value["method"].as_str().unwrap_or("").to_string();
+								labels[2] = "true".to_string();
+							}
+							Err(_) => {
+								println!("not json");
+							}
+						}
+
+						{
+							let metrics = metrics.lock().await;
+							metrics
+								.websocket_messages_total
+								.with_label_values(
+									&labels.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+								)
+								.inc();
+						}
+
 						if let Err(e) = outgoing_tx.write_frame(frame).await {
 							eprintln!("Error sending frame: {}", e);
 							break;
@@ -154,6 +218,7 @@ async fn server_upgrade(mut req: Request<Body>) -> Result<Response<Body>> {
 			}
 		});
 
+		//from upstream to client
 		tokio::spawn(async move {
 			while let Ok(frame) = outgoing_rx
 				.read_frame::<_, WebSocketError>(&mut move |_| async {
@@ -161,11 +226,11 @@ async fn server_upgrade(mut req: Request<Body>) -> Result<Response<Body>> {
 				})
 				.await
 			{
-				println!("Received a frame (upstream)");
-				println!("{:?}", std::str::from_utf8(&frame.payload));
+				println!("Received a response from upstream");
 				match frame.opcode {
 					OpCode::Close => break,
 					OpCode::Text | OpCode::Binary => {
+						println!("{:?}", std::str::from_utf8(&frame.payload));
 						if let Err(e) = incoming_tx.write_frame(frame).await {
 							eprintln!("Error sending frame: {}", e);
 							break;
@@ -188,27 +253,31 @@ async fn main() {
 
 	let metrics = Arc::new(Mutex::new(Metrics::new()));
 	let prometheus_route = warp::path("metrics").map(move || {
-       let encoder = TextEncoder::new();
-        let metric_families = prometheus::gather();
-        let mut buffer = Vec::new();
-        encoder.encode(&metric_families, &mut buffer).unwrap();
-        Response::builder()
-            .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-            .body(buffer)
-            .unwrap()
+		let encoder = TextEncoder::new();
+		let metric_families = prometheus::gather();
+		let mut buffer = Vec::new();
+		encoder.encode(&metric_families, &mut buffer).unwrap();
+		Response::builder()
+			.header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+			.body(buffer)
+			.unwrap()
 	});
 
 	let addr = SocketAddr::from(([0, 0, 0, 0], 8765));
 	let make_service = make_service_fn(move |_conn| {
 		let config_clone = config.clone();
 		let metrics_clone = metrics.clone();
-		async move { Ok::<_, Infallible>(service_fn(move |req| handle(req, config_clone.clone(), Arc::clone(&metrics_clone)))) }
+		async move {
+			Ok::<_, Infallible>(service_fn(move |req| {
+				handle(req, config_clone.clone(), Arc::clone(&metrics_clone))
+			}))
+		}
 	});
 
 	let server = Server::bind(&addr).serve(make_service);
 	println!("Server listening on ws://0.0.0.0:8765");
 
-	let warp_server = warp::serve(prometheus_route).run(([0, 0, 0, 0], 9090));
-	println!("Prometheus exporter listening on ws://0.0.0.0:9090");
+	let warp_server = warp::serve(prometheus_route).run(([0, 0, 0, 0], 9091));
+	println!("Prometheus exporter listening on ws://0.0.0.0:9091");
 	tokio::join!(server, warp_server);
 }
