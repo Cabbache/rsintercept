@@ -168,6 +168,6 @@ where
 }
 
 /*
-example usage: echo '127.0.0.1 ws.ifelse.io >> /etc/hosts'
+example usage: echo '127.0.0.1 ws.ifelse.io' >> /etc/hosts
 python -m websockets ws://ws.ifelse.io
 */
