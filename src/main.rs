@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						Ok(response.map(|r| r.map_err(|e| match e {}).boxed()));
 
 					tokio::task::spawn(async move {
-						let mut incoming_ws = incoming_fut.await.unwrap();
+						let incoming_ws = incoming_fut.await.unwrap();
 						let outgoing_ws = connect().await.unwrap();
 
 						let (incoming_rx, mut incoming_tx) =
