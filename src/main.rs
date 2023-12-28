@@ -47,13 +47,9 @@ struct Args {
 	#[arg(short = 'h', long)]
 	upstream_host: Option<String>,
 
-	/// proxy listen interface
-	#[arg(short = 'l', long, default_value_t = Ipv4Addr::new(127, 0, 0, 1))]
-	listen_interface: Ipv4Addr,
-
-	/// proxy listen port
-	#[arg(short = 'p', long)]
-	listen_port: u16,
+	/// Bind address
+	#[arg(short = 'l', long, default_value_t = String::from("127.0.0.1:8080"))]
+	bind_address: String,
 
 	/// prometheus listen interface
 	#[arg(short = 'k', long, default_value_t = Ipv4Addr::new(127, 0, 0, 1))]
@@ -147,7 +143,6 @@ where
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let args = Args::parse();
 
-	let in_addr: SocketAddr = (args.listen_interface, args.listen_port).into();
 	let out_addr: SocketAddr = (args.upstream_ip, args.upstream_port).into();
 	let prometheus_addr: SocketAddr = (
 		args.prometheus_listen_interface,
@@ -158,7 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let override_host = args.upstream_host.is_some();
 	let upstream_host = args.upstream_host.unwrap_or("".to_string());
 
-	let listener = TcpListener::bind(in_addr).await?;
+	let listener = TcpListener::bind(args.bind_address.clone()).await?;
 
 	let metrics = Arc::new(Mutex::new(Metrics::new()));
 	let prometheus_route = warp::path("metrics").map(move || {
@@ -169,7 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		String::from_utf8(buffer).unwrap()
 	});
 
-	println!("Listening on {}", in_addr);
+	println!("Listening on {}", args.bind_address);
 	println!("Proxying to {}", out_addr);
 
 	tokio::task::spawn(async move {
