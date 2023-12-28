@@ -36,31 +36,31 @@ use std::net::Ipv4Addr;
 #[command(author, version, about, long_about = None)]
 struct Args {
 	/// ip address of upstream
-	#[arg(short, long)]
+	#[arg(short = 'u', long)]
 	upstream_ip: Ipv4Addr,
 
 	/// upstream port
-	#[arg(short, long)]
+	#[arg(short = 'e', long)]
 	upstream_port: u16,
 
 	/// Host http header to use for upstream, it is left untouched by default
-	#[arg(short, long)]
+	#[arg(short = 'h', long)]
 	upstream_host: Option<String>,
 
 	/// proxy listen interface
-	#[arg(short, long, default_value_t = Ipv4Addr::new(127, 0, 0, 1))]
+	#[arg(short = 'l', long, default_value_t = Ipv4Addr::new(127, 0, 0, 1))]
 	listen_interface: Ipv4Addr,
 
 	/// proxy listen port
-	#[arg(short, long)]
+	#[arg(short = 'p', long)]
 	listen_port: u16,
 
 	/// prometheus listen interface
-	#[arg(short, long, default_value_t = Ipv4Addr::new(127, 0, 0, 1))]
+	#[arg(short = 'k', long, default_value_t = Ipv4Addr::new(127, 0, 0, 1))]
 	prometheus_listen_interface: Ipv4Addr,
 
 	/// prometheus listen port
-	#[arg(short, long, default_value_t = 9100)]
+	#[arg(short = 'm', long, default_value_t = 9100)]
 	prometheus_listen_port: u16,
 }
 
