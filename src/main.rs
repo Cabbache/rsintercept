@@ -5,6 +5,8 @@ use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
+use std::net::ToSocketAddrs;
+
 use warp::Filter;
 
 use http_body_util::combinators::BoxBody;
@@ -29,31 +31,25 @@ use anyhow::Result;
 
 use std::sync::Arc;
 
-use std::net::Ipv4Addr;
-
 /// CLI upstream http/ws proxy
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-	/// ip address of upstream
-	#[arg(short = 'u', long)]
-	upstream_ip: Ipv4Addr,
-
-	/// upstream port
-	#[arg(short = 'e', long)]
-	upstream_port: u16,
-
-	/// Host http header to use for upstream, it is left untouched by default
+	/// Upstream host address
 	#[arg(short = 'h', long)]
-	upstream_host: Option<String>,
+	upstream_address: String,
 
 	/// Bind address
 	#[arg(short = 'l', long, default_value_t = String::from("127.0.0.1:8080"))]
 	bind_address: String,
 
-	///prometheus bind address
+	/// Prometheus bind address
 	#[arg(short = 'p', long, default_value_t = String::from("127.0.0.1:9100"))]
 	prometheus_bind_address: String,
+
+	/// Host http header to use for upstream, it is left untouched by default
+	#[arg(long)]
+	http_host: Option<String>,
 }
 
 struct Metrics {
@@ -139,11 +135,18 @@ where
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let args = Args::parse();
 
-	let out_addr: SocketAddr = (args.upstream_ip, args.upstream_port).into();
-	let override_host = args.upstream_host.is_some();
-	let upstream_host = args.upstream_host.unwrap_or("".to_string());
+	let override_host = args.http_host.is_some();
+	let http_host = args.http_host.unwrap_or("".to_string());
 
 	let listener = TcpListener::bind(args.bind_address.clone()).await?;
+
+	let out_addr = args
+		.upstream_address.
+		to_socket_addrs()
+		.expect("Unable to parse upstream address")
+		.next()
+		.expect("Unable to parse upstream address");
+	//assert_eq!(addrs_iter.next(), Some(SocketAddr::from(([127, 0, 0, 1], 443))));
 
 	let metrics = Arc::new(Mutex::new(Metrics::new()));
 	let prometheus_route = warp::path("metrics").map(move || {
@@ -155,7 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	});
 
 	println!("Listening on {}", args.bind_address);
-	println!("Proxying to {}", out_addr);
+	println!("Proxying to {}", args.upstream_address);
 
 	let prom_addr: SocketAddr = args
 		.prometheus_bind_address
@@ -172,10 +175,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		let io = TokioIo::new(stream);
 
 		let metrics_clone = metrics.clone();
-		let upstream_host = upstream_host.clone();
+		let http_host = http_host.clone();
 
 		let service = service_fn(move |mut req| {
-			let upstream_host = upstream_host.clone();
+			let http_host = http_host.clone();
 
 			//TODO use the in built function
 			let is_websocket = req.headers().contains_key("Sec-WebSocket-Key");
@@ -208,7 +211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						//let hostValue = req.headers().get(HOST);
 						//println!("{}", hostValue);
 						let connect_host = match override_host {
-							true => Some(HeaderValue::from_str(&upstream_host).unwrap()),
+							true => Some(HeaderValue::from_str(&http_host).unwrap()),
 							false => req.headers().get(HOST).cloned(),
 						};
 
@@ -288,7 +291,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 					if override_host {
 						req.headers_mut()
-							.insert(HOST, HeaderValue::from_str(&upstream_host).unwrap());
+							.insert(HOST, HeaderValue::from_str(&http_host).unwrap());
 					}
 					let qq = sender.send_request(req).await.unwrap();
 					println!("Served http request");
