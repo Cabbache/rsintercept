@@ -49,3 +49,8 @@ rs_intercept_websocket_sessions_total{path="/abc"} 1
 rs_intercept_websocket_sessions_total{path="/abcdef"} 2
 rs_intercept_websocket_sessions_total{path="/some-path"} 1
 ```
+
+## Example usage
+```console
+cargo run --release -- -h ws.ifelse.io:80 --http-host ws.ifelse.io
+```
