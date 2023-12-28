@@ -1,3 +1,4 @@
+use clap::Parser;
 use hyper::{server::conn::http1, service::service_fn};
 use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
@@ -10,7 +11,9 @@ use http_body_util::combinators::BoxBody;
 use http_body_util::BodyExt;
 use http_body_util::Empty;
 use hyper::body::Bytes;
+use hyper::header::HeaderValue;
 use hyper::header::CONNECTION;
+use hyper::header::HOST;
 use hyper::header::UPGRADE;
 use hyper::upgrade::Upgraded;
 use hyper::{Request, Response};
@@ -26,36 +29,39 @@ use anyhow::Result;
 
 use std::sync::Arc;
 
-async fn connect() -> Result<WebSocket<TokioIo<Upgraded>>> {
-	let stream = TcpStream::connect("172.67.171.72:80").await?;
+use std::net::Ipv4Addr;
 
-	let req = Request::builder()
-		.method("GET")
-		.uri("/")
-		.header("Host", "ws.ifelse.io")
-		.header(UPGRADE, "websocket")
-		.header(CONNECTION, "upgrade")
-		.header(
-			"Sec-WebSocket-Key",
-			fastwebsockets::handshake::generate_key(),
-		)
-		.header("Sec-WebSocket-Version", "13")
-		.body(Empty::<Bytes>::new())?;
+/// CLI upstream http/ws proxy
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+	/// ip address of upstream
+	#[arg(short, long)]
+	upstream_ip: Ipv4Addr,
 
-	println!("ok");
-	let (ws, _) = handshake::client(&SpawnExecutor, req, stream).await?;
-	Ok(ws)
-}
+	/// upstream port
+	#[arg(short, long)]
+	upstream_port: u16,
 
-struct SpawnExecutor;
-impl<Fut> hyper::rt::Executor<Fut> for SpawnExecutor
-where
-	Fut: Future + Send + 'static,
-	Fut::Output: Send + 'static,
-{
-	fn execute(&self, fut: Fut) {
-		tokio::task::spawn(fut);
-	}
+	/// Host http header to use for upstream, it is left untouched by default
+	#[arg(short, long)]
+	upstream_host: Option<String>,
+
+	/// proxy listen interface
+	#[arg(short, long, default_value_t = Ipv4Addr::new(127, 0, 0, 1))]
+	listen_interface: Ipv4Addr,
+
+	/// proxy listen port
+	#[arg(short, long)]
+	listen_port: u16,
+
+	/// prometheus listen interface
+	#[arg(short, long, default_value_t = Ipv4Addr::new(127, 0, 0, 1))]
+	prometheus_listen_interface: Ipv4Addr,
+
+	/// prometheus listen port
+	#[arg(short, long, default_value_t = 9100)]
+	prometheus_listen_port: u16,
 }
 
 struct Metrics {
@@ -98,12 +104,59 @@ impl Metrics {
 	}
 }
 
+async fn connect_ws_upstream(
+	addr: &SocketAddr,
+	host: Option<HeaderValue>,
+) -> Result<WebSocket<TokioIo<Upgraded>>> {
+	let stream = TcpStream::connect(addr).await?;
+
+	let mut req = Request::builder().method("GET").uri("/");
+
+	if let Some(value) = host {
+		println!("{:?}", value);
+		req = req.header(HOST, value);
+	}
+
+	let req = req
+		.header(UPGRADE, "websocket")
+		.header(CONNECTION, "upgrade")
+		.header(
+			"Sec-WebSocket-Key",
+			fastwebsockets::handshake::generate_key(),
+		)
+		.header("Sec-WebSocket-Version", "13")
+		.body(Empty::<Bytes>::new())?;
+
+	println!("ok");
+	let (ws, _) = handshake::client(&SpawnExecutor, req, stream).await?;
+	Ok(ws)
+}
+
+struct SpawnExecutor;
+impl<Fut> hyper::rt::Executor<Fut> for SpawnExecutor
+where
+	Fut: Future + Send + 'static,
+	Fut::Output: Send + 'static,
+{
+	fn execute(&self, fut: Fut) {
+		tokio::task::spawn(fut);
+	}
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-	let in_addr: SocketAddr = ([127, 0, 0, 1], 80).into();
-	let out_addr: SocketAddr = ([172, 67, 171, 72], 80).into();
+	let args = Args::parse();
 
-	let out_addr_clone = out_addr.clone();
+	let in_addr: SocketAddr = (args.listen_interface, args.listen_port).into();
+	let out_addr: SocketAddr = (args.upstream_ip, args.upstream_port).into();
+	let prometheus_addr: SocketAddr = (
+		args.prometheus_listen_interface,
+		args.prometheus_listen_port,
+	)
+		.into();
+
+	let override_host = args.upstream_host.is_some();
+	let upstream_host = args.upstream_host.unwrap_or("".to_string());
 
 	let listener = TcpListener::bind(in_addr).await?;
 
@@ -116,14 +169,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		String::from_utf8(buffer).unwrap()
 	});
 
-	println!("Listening on http://{}", in_addr);
-	println!("Proxying on http://{}", out_addr);
+	println!("Listening on {}", in_addr);
+	println!("Proxying to {}", out_addr);
 
 	tokio::task::spawn(async move {
-		println!("Serving prometheus on 0.0.0.0:9091");
-		warp::serve(prometheus_route)
-			.run(([0, 0, 0, 0], 9091))
-			.await;
+		println!("Prometheus exporter listening on {}", prometheus_addr);
+		warp::serve(prometheus_route).run(prometheus_addr).await;
 	});
 
 	loop {
@@ -131,10 +182,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		let io = TokioIo::new(stream);
 
 		let metrics_clone = metrics.clone();
+		let upstream_host = upstream_host.clone();
 
 		let service = service_fn(move |mut req| {
-			let addr = format!("{}", out_addr_clone);
+			let upstream_host = upstream_host.clone();
 
+			//TODO use the in built function
 			let is_websocket = req.headers().contains_key("Sec-WebSocket-Key");
 
 			let mtr = Arc::clone(&metrics_clone);
@@ -162,7 +215,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 					tokio::task::spawn(async move {
 						let incoming_ws = incoming_fut.await.unwrap();
-						let outgoing_ws = connect().await.unwrap();
+						//let hostValue = req.headers().get(HOST);
+						//println!("{}", hostValue);
+						let connect_host = match override_host {
+							true => Some(HeaderValue::from_str(&upstream_host).unwrap()),
+							false => req.headers().get(HOST).cloned(),
+						};
+
+						let outgoing_ws =
+							connect_ws_upstream(&out_addr, connect_host).await.unwrap();
 
 						let (incoming_rx, mut incoming_tx) =
 							incoming_ws.split(|ws| tokio::io::split(ws));
@@ -225,7 +286,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 					resp
 				} else {
-					let client_stream = TcpStream::connect(addr).await.unwrap();
+					let client_stream = TcpStream::connect(out_addr).await.unwrap();
 					let io = TokioIo::new(client_stream);
 					let (mut sender, conn) =
 						hyper::client::conn::http1::handshake(io).await.unwrap();
@@ -235,6 +296,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						}
 					});
 
+					if override_host {
+						req.headers_mut()
+							.insert(HOST, HeaderValue::from_str(&upstream_host).unwrap());
+					}
 					let qq = sender.send_request(req).await.unwrap();
 					println!("Served http request");
 					let resp: Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> =
