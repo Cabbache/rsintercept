@@ -8,23 +8,17 @@ An upstream http proxy that supports websockets.
 ```console
 CLI upstream http/ws proxy
 
-Usage: rsintercept [OPTIONS] --upstream-ip <UPSTREAM_IP> --upstream-port <UPSTREAM_PORT> --listen-port <LISTEN_PORT>
+Usage: rsintercept [OPTIONS] --upstream-address <UPSTREAM_ADDRESS>
 
 Options:
-  -u, --upstream-ip <UPSTREAM_IP>
-          ip address of upstream
-  -e, --upstream-port <UPSTREAM_PORT>
-          upstream port
-  -h, --upstream-host <UPSTREAM_HOST>
+  -h, --upstream-address <UPSTREAM_ADDRESS>
+          Upstream host address
+  -l, --bind-address <BIND_ADDRESS>
+          Bind address [default: 127.0.0.1:8080]
+  -p, --prometheus-bind-address <PROMETHEUS_BIND_ADDRESS>
+          Prometheus bind address [default: 127.0.0.1:9100]
+      --http-host <HTTP_HOST>
           Host http header to use for upstream, it is left untouched by default
-  -l, --listen-interface <LISTEN_INTERFACE>
-          proxy listen interface [default: 127.0.0.1]
-  -p, --listen-port <LISTEN_PORT>
-          proxy listen port
-  -k, --prometheus-listen-interface <PROMETHEUS_LISTEN_INTERFACE>
-          prometheus listen interface [default: 127.0.0.1]
-  -m, --prometheus-listen-port <PROMETHEUS_LISTEN_PORT>
-          prometheus listen port [default: 9100]
   -h, --help
           Print help
   -V, --version
