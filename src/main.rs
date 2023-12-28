@@ -51,13 +51,9 @@ struct Args {
 	#[arg(short = 'l', long, default_value_t = String::from("127.0.0.1:8080"))]
 	bind_address: String,
 
-	/// prometheus listen interface
-	#[arg(short = 'k', long, default_value_t = Ipv4Addr::new(127, 0, 0, 1))]
-	prometheus_listen_interface: Ipv4Addr,
-
-	/// prometheus listen port
-	#[arg(short = 'm', long, default_value_t = 9100)]
-	prometheus_listen_port: u16,
+	///prometheus bind address
+	#[arg(short = 'p', long, default_value_t = String::from("127.0.0.1:9100"))]
+	prometheus_bind_address: String,
 }
 
 struct Metrics {
@@ -144,12 +140,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let args = Args::parse();
 
 	let out_addr: SocketAddr = (args.upstream_ip, args.upstream_port).into();
-	let prometheus_addr: SocketAddr = (
-		args.prometheus_listen_interface,
-		args.prometheus_listen_port,
-	)
-		.into();
-
 	let override_host = args.upstream_host.is_some();
 	let upstream_host = args.upstream_host.unwrap_or("".to_string());
 
@@ -167,9 +157,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	println!("Listening on {}", args.bind_address);
 	println!("Proxying to {}", out_addr);
 
+	let prom_addr: SocketAddr = args
+		.prometheus_bind_address
+		.parse()
+		.expect("Invalid bind address for prometheus");
+
 	tokio::task::spawn(async move {
-		println!("Prometheus exporter listening on {}", prometheus_addr);
-		warp::serve(prometheus_route).run(prometheus_addr).await;
+		println!("Prometheus exporter listening on {}", args.prometheus_bind_address.clone());
+		warp::serve(prometheus_route).run(prom_addr).await;
 	});
 
 	loop {
