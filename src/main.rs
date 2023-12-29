@@ -11,13 +11,11 @@ use warp::Filter;
 
 use http_body_util::combinators::BoxBody;
 use http_body_util::BodyExt;
-use http_body_util::Empty;
 use hyper::body::Bytes;
 use hyper::header::HeaderValue;
-use hyper::header::CONNECTION;
 use hyper::header::HOST;
-use hyper::header::UPGRADE;
 use hyper::upgrade::Upgraded;
+use hyper::body::Incoming;
 use hyper::{Request, Response};
 
 use std::future::Future;
@@ -94,26 +92,9 @@ impl Metrics {
 
 async fn connect_ws_upstream(
 	addr: &SocketAddr,
-	host: Option<HeaderValue>,
+	req: Request<Incoming>,
 ) -> Result<WebSocket<TokioIo<Upgraded>>> {
 	let stream = TcpStream::connect(addr).await?;
-
-	let mut req = Request::builder().method("GET").uri("/");
-
-	if let Some(value) = host {
-		println!("{:?}", value);
-		req = req.header(HOST, value);
-	}
-
-	let req = req
-		.header(UPGRADE, "websocket")
-		.header(CONNECTION, "upgrade")
-		.header(
-			"Sec-WebSocket-Key",
-			fastwebsockets::handshake::generate_key(),
-		)
-		.header("Sec-WebSocket-Version", "13")
-		.body(Empty::<Bytes>::new())?;
 
 	println!("ok");
 	let (ws, _) = handshake::client(&SpawnExecutor, req, stream).await?;
@@ -201,6 +182,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					}
 				}
 
+				if override_host {
+					req.headers_mut()
+						.insert(HOST, HeaderValue::from_str(&http_host).unwrap());
+				}
+
 				if is_websocket {
 					let (response, incoming_fut) = upgrade(&mut req).unwrap();
 					let resp: Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> =
@@ -208,15 +194,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 					tokio::task::spawn(async move {
 						let incoming_ws = incoming_fut.await.unwrap();
-						//let hostValue = req.headers().get(HOST);
-						//println!("{}", hostValue);
-						let connect_host = match override_host {
-							true => Some(HeaderValue::from_str(&http_host).unwrap()),
-							false => req.headers().get(HOST).cloned(),
-						};
+
+						let req_path = String::from(req.uri().path());
 
 						let outgoing_ws =
-							connect_ws_upstream(&out_addr, connect_host).await.unwrap();
+							connect_ws_upstream(&out_addr, req).await.unwrap();
 
 						let (incoming_rx, mut incoming_tx) =
 							incoming_ws.split(|ws| tokio::io::split(ws));
@@ -241,7 +223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 											let mtr_lock = mtr.lock().await;
 											mtr_lock
 												.websocket_messages_total
-												.with_label_values(&[req.uri().path()])
+												.with_label_values(&[&req_path])
 												.inc();
 										}
 										if let Err(e) = outgoing_tx.write_frame(frame).await {
@@ -289,10 +271,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						}
 					});
 
-					if override_host {
-						req.headers_mut()
-							.insert(HOST, HeaderValue::from_str(&http_host).unwrap());
-					}
 					let qq = sender.send_request(req).await.unwrap();
 					println!("Served http request");
 					let resp: Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> =
