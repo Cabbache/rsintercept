@@ -164,17 +164,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 			async move {
 				{
 					let mtr_lock = mtr.lock().await;
-					if is_websocket {
-						mtr_lock
-							.websocket_sessions_total
-							.with_label_values(&[req.uri().path()])
-							.inc();
-					} else {
-						mtr_lock
-							.non_websocket_total
-							.with_label_values(&[req.uri().path()])
-							.inc();
-					}
+					match is_websocket {
+						true => &mtr_lock.websocket_sessions_total,
+						false => &mtr_lock.non_websocket_total,
+					}.with_label_values(&[req.uri().path()]).inc();
 				}
 
 				if override_host {
@@ -198,7 +191,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						let outgoing_ws = match outgoing_ws {
 							Ok(ws) => ws,
 							Err(e) => {
-								eprintln!("{}", e);
+								eprintln!("ws connect failed: {}", e);
 								return;
 							}
 						};
