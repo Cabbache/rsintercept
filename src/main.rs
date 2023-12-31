@@ -20,7 +20,7 @@ use hyper::{Request, Response};
 
 use std::future::Future;
 
-use fastwebsockets::upgrade::upgrade;
+use fastwebsockets::upgrade::{upgrade, is_upgrade_request};
 use fastwebsockets::{handshake, FragmentCollectorRead, OpCode, WebSocket, WebSocketError};
 
 use prometheus::{register_counter_vec, CounterVec, Encoder, Opts, TextEncoder};
@@ -95,8 +95,6 @@ async fn connect_ws_upstream(
 	req: Request<Incoming>,
 ) -> Result<WebSocket<TokioIo<Upgraded>>> {
 	let stream = TcpStream::connect(addr).await?;
-
-	println!("ok");
 	let (ws, _) = handshake::client(&SpawnExecutor, req, stream).await?;
 	Ok(ws)
 }
@@ -127,7 +125,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		.expect("Unable to parse upstream address")
 		.next()
 		.expect("Unable to parse upstream address");
-	//assert_eq!(addrs_iter.next(), Some(SocketAddr::from(([127, 0, 0, 1], 443))));
 
 	let metrics = Arc::new(Mutex::new(Metrics::new()));
 	let prometheus_route = warp::path("metrics").map(move || {
@@ -160,11 +157,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 		let service = service_fn(move |mut req| {
 			let http_host = http_host.clone();
-
-			//TODO use the in built function
-			let is_websocket = req.headers().contains_key("Sec-WebSocket-Key");
-
 			let mtr = Arc::clone(&metrics_clone);
+
+			let is_websocket = is_upgrade_request(&req);
 
 			async move {
 				{
@@ -198,7 +193,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						let req_path = String::from(req.uri().path());
 
 						let outgoing_ws =
-							connect_ws_upstream(&out_addr, req).await.unwrap();
+							connect_ws_upstream(&out_addr, req).await;
+
+						let outgoing_ws = match outgoing_ws {
+							Ok(ws) => ws,
+							Err(e) => {
+								eprintln!("{}", e);
+								return;
+							}
+						};
 
 						let (incoming_rx, mut incoming_tx) =
 							incoming_ws.split(|ws| tokio::io::split(ws));
@@ -210,12 +213,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						tokio::spawn(async move {
 							while let Ok(frame) = incoming_rx
 								.read_frame::<_, WebSocketError>(&mut move |_| async {
-									unreachable!();
+									println!("Connection closed");
+									Ok::<(), WebSocketError>(())
 								})
 								.await
 							{
-								println!("Received a frame (user)");
-								println!("{:?}", std::str::from_utf8(&frame.payload));
+								let decoded_payload = std::str::from_utf8(&frame.payload);
+								let decoded_payload = match decoded_payload {
+									Ok(p) => p,
+									Err(_) => return,
+								};
+								println!("↑ {}", decoded_payload);
 								match frame.opcode {
 									OpCode::Close => break,
 									OpCode::Text | OpCode::Binary => {
@@ -239,12 +247,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						tokio::spawn(async move {
 							while let Ok(frame) = outgoing_rx
 								.read_frame::<_, WebSocketError>(&mut move |_| async {
-									unreachable!();
+									println!("Connection closed");
+									Ok::<(), WebSocketError>(())
 								})
 								.await
 							{
-								println!("Received a frame (upstream)");
-								println!("{:?}", std::str::from_utf8(&frame.payload));
+								let decoded_payload = std::str::from_utf8(&frame.payload);
+								let decoded_payload = match decoded_payload {
+									Ok(p) => p,
+									Err(_) => return,
+								};
+								println!("↓ {}", decoded_payload);
 								match frame.opcode {
 									OpCode::Close => break,
 									OpCode::Text | OpCode::Binary => {
@@ -267,12 +280,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						hyper::client::conn::http1::handshake(io).await.unwrap();
 					tokio::task::spawn(async move {
 						if let Err(err) = conn.await {
-							println!("Connection failed: {:?}", err);
+							eprintln!("Connection failed: {:?}", err);
 						}
 					});
 
 					let qq = sender.send_request(req).await.unwrap();
-					println!("Served http request");
 					let resp: Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> =
 						Ok(qq.map(|p| p.boxed()));
 					resp
@@ -286,7 +298,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				.with_upgrades()
 				.await
 			{
-				println!("Failed to serve the connection: {:?}", err);
+				eprintln!("Failed to serve the connection: {:?}", err);
 			}
 		});
 	}
