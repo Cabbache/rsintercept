@@ -180,14 +180,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 			let is_websocket = is_upgrade_request(&req);
 
 			async move {
-				{
-					let mtr_lock = mtr.lock().await;
-					match is_websocket {
-						true => &mtr_lock.websocket_sessions,
-						false => &mtr_lock.non_websocket,
-					}.with_label_values(&[req.uri().path()]).inc();
-				}
-
 				if override_host {
 					req.headers_mut()
 						.insert(HOST, HeaderValue::from_str(&http_host).unwrap());
@@ -201,12 +193,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						.unwrap()
 				};
 
+				let req_path = String::from(req.uri().path());
+
 				if is_websocket {
 					let (response, incoming_fut) = upgrade(&mut req).unwrap();
 					let resp: Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> =
 						Ok(response.map(|r| r.map_err(|e| match e {}).boxed()));
-
-					let req_path = String::from(req.uri().path());
 
 					let outgoing_ws = match connect_ws_upstream(&out_addr, req).await {
 						Ok(ws) => ws,
@@ -215,6 +207,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 					tokio::task::spawn(async move {
 						let incoming_ws = incoming_fut.await.unwrap();
+
+						mtr.lock().await.websocket_sessions.with_label_values(&[&req_path]).inc();
 
 						let (incoming_rx, mut incoming_tx) =
 							incoming_ws.split(|ws| tokio::io::split(ws));
@@ -240,13 +234,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 								match frame.opcode {
 									OpCode::Close => break,
 									OpCode::Text | OpCode::Binary => {
-										{
-											let mtr_lock = mtr.lock().await;
-											mtr_lock
+											mtr.lock().await
 												.websocket_messages
 												.with_label_values(&[&req_path])
 												.inc();
-										}
 										if let Err(e) = outgoing_tx.write_frame(frame).await {
 											eprintln!("Error sending frame: {}", e);
 											break;
@@ -305,6 +296,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						Ok(resp) => resp,
 						Err(e) => return Ok(handle_error(e.into()))
 					};
+
+					mtr.lock().await.non_websocket.with_label_values(&[&req_path]).inc();
 				
 					let response: Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> =
 						Ok(upstream_response.map(|p| p.boxed()));
