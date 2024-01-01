@@ -25,7 +25,7 @@ use std::future::Future;
 use fastwebsockets::upgrade::{upgrade, is_upgrade_request};
 use fastwebsockets::{handshake, FragmentCollectorRead, OpCode, WebSocket, WebSocketError};
 
-use prometheus::{register_counter_vec, CounterVec, Encoder, Opts, TextEncoder};
+use prometheus::{register_counter_vec, register_counter, CounterVec, Counter, Encoder, Opts, TextEncoder};
 
 use anyhow::Result;
 
@@ -53,18 +53,21 @@ struct Args {
 }
 
 struct Metrics {
-	non_websocket_total: CounterVec,
-	websocket_messages_total: CounterVec,
-	websocket_sessions_total: CounterVec,
+	non_websocket: CounterVec,
+	websocket_messages: CounterVec,
+	websocket_sessions: CounterVec,
+
+	non_websocket_fail: Counter,
+	websocket_fail: Counter,
 }
 
 impl Metrics {
 	fn new() -> Metrics {
 		let namespace = "rs_intercept";
 
-		let non_websocket_total = register_counter_vec!(
+		let non_websocket = register_counter_vec!(
 			Opts::new(
-				"non_websocket_total",
+				"non_websocket",
 				"Total HTTP requests forwarded that were not websocket",
 			)
 			.namespace(namespace),
@@ -72,22 +75,35 @@ impl Metrics {
 		)
 		.unwrap();
 
-		let websocket_messages_total = register_counter_vec!(
-			Opts::new("websocket_messages_total", "Total WebSocket messages").namespace(namespace),
+		let websocket_messages = register_counter_vec!(
+			Opts::new("websocket_messages", "Total WebSocket messages").namespace(namespace),
 			&["path"]
 		)
 		.unwrap();
 
-		let websocket_sessions_total = register_counter_vec!(
-			Opts::new("websocket_sessions_total", "Total WebSocket sessions").namespace(namespace),
+		let websocket_sessions = register_counter_vec!(
+			Opts::new("websocket_sessions", "Total WebSocket sessions").namespace(namespace),
 			&["path"]
+		)
+		.unwrap();
+
+		let websocket_fail = register_counter!(
+			Opts::new("websocket_fail", "total websocket requests that could not be upgraded").namespace(namespace)
+		)
+		.unwrap();
+
+		let non_websocket_fail = register_counter!(
+			Opts::new("non_websocket_fail", "total non websocket requests that upstream could not handle").namespace(namespace)
 		)
 		.unwrap();
 
 		Metrics {
-			non_websocket_total,
-			websocket_messages_total,
-			websocket_sessions_total,
+			non_websocket,
+			websocket_messages,
+			websocket_sessions,
+
+			websocket_fail,
+			non_websocket_fail,
 		}
 	}
 }
@@ -167,8 +183,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				{
 					let mtr_lock = mtr.lock().await;
 					match is_websocket {
-						true => &mtr_lock.websocket_sessions_total,
-						false => &mtr_lock.non_websocket_total,
+						true => &mtr_lock.websocket_sessions,
+						false => &mtr_lock.non_websocket,
 					}.with_label_values(&[req.uri().path()]).inc();
 				}
 
@@ -227,7 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 										{
 											let mtr_lock = mtr.lock().await;
 											mtr_lock
-												.websocket_messages_total
+												.websocket_messages
 												.with_label_values(&[&req_path])
 												.inc();
 										}
