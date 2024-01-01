@@ -202,7 +202,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 					let outgoing_ws = match connect_ws_upstream(&out_addr, req).await {
 						Ok(ws) => ws,
-						Err(e) => return Ok(handle_error(e.into()))
+						Err(e) => {
+							mtr.lock().await.websocket_fail.inc();
+							return Ok(handle_error(e.into()))
+						}
 					};
 
 					tokio::task::spawn(async move {
@@ -234,10 +237,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 								match frame.opcode {
 									OpCode::Close => break,
 									OpCode::Text | OpCode::Binary => {
-											mtr.lock().await
-												.websocket_messages
-												.with_label_values(&[&req_path])
-												.inc();
+										mtr.lock().await
+											.websocket_messages
+											.with_label_values(&[&req_path])
+											.inc();
 										if let Err(e) = outgoing_tx.write_frame(frame).await {
 											eprintln!("Error sending frame: {}", e);
 											break;
@@ -280,7 +283,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				} else {
 					let client_stream = match TcpStream::connect(out_addr).await {
 						Ok(stream) => stream,
-						Err(e) => return Ok(handle_error(e.into()))
+						Err(e) => {
+							mtr.lock().await.non_websocket_fail.inc();
+							return Ok(handle_error(e.into()))
+						}
 					};
 
 					let io = TokioIo::new(client_stream);
@@ -294,7 +300,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 					let upstream_response = match sender.send_request(req).await {
 						Ok(resp) => resp,
-						Err(e) => return Ok(handle_error(e.into()))
+						Err(e) => {
+							mtr.lock().await.non_websocket_fail.inc();
+							return Ok(handle_error(e.into()))
+						}
 					};
 
 					mtr.lock().await.non_websocket.with_label_values(&[&req_path]).inc();
