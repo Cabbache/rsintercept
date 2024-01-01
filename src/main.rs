@@ -190,22 +190,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					let resp: Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> =
 						Ok(response.map(|r| r.map_err(|e| match e {}).boxed()));
 
+					let req_path = String::from(req.uri().path());
+
+					let outgoing_ws = match connect_ws_upstream(&out_addr, req).await {
+						Ok(ws) => ws,
+						Err(e) => return Ok(handle_error(e.into()))
+					};
 
 					tokio::task::spawn(async move {
 						let incoming_ws = incoming_fut.await.unwrap();
-
-						let req_path = String::from(req.uri().path());
-
-						let outgoing_ws =
-							connect_ws_upstream(&out_addr, req).await;
-
-						let outgoing_ws = match outgoing_ws {
-							Ok(ws) => ws,
-							Err(e) => {
-								eprintln!("ws connect failed: {}", e); //TODO increment some metric
-								return;
-							}
-						};
 
 						let (incoming_rx, mut incoming_tx) =
 							incoming_ws.split(|ws| tokio::io::split(ws));
