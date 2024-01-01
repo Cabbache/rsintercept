@@ -10,11 +10,13 @@ use std::net::ToSocketAddrs;
 use warp::Filter;
 
 use http_body_util::combinators::BoxBody;
+use http_body_util::Empty;
 use http_body_util::BodyExt;
 use hyper::body::Bytes;
 use hyper::header::HeaderValue;
 use hyper::header::HOST;
 use hyper::upgrade::Upgraded;
+use hyper::StatusCode;
 use hyper::body::Incoming;
 use hyper::{Request, Response};
 
@@ -175,10 +177,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						.insert(HOST, HeaderValue::from_str(&http_host).unwrap());
 				}
 
+				let handle_error = |e: anyhow::Error| {
+					eprintln!("{}", e);
+					Response::builder()
+						.status(StatusCode::SERVICE_UNAVAILABLE)
+						.body(empty())
+						.unwrap()
+				};
+
 				if is_websocket {
 					let (response, incoming_fut) = upgrade(&mut req).unwrap();
 					let resp: Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> =
 						Ok(response.map(|r| r.map_err(|e| match e {}).boxed()));
+
 
 					tokio::task::spawn(async move {
 						let incoming_ws = incoming_fut.await.unwrap();
@@ -191,7 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						let outgoing_ws = match outgoing_ws {
 							Ok(ws) => ws,
 							Err(e) => {
-								eprintln!("ws connect failed: {}", e);
+								eprintln!("ws connect failed: {}", e); //TODO increment some metric
 								return;
 							}
 						};
@@ -267,7 +278,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 					resp
 				} else {
-					let client_stream = TcpStream::connect(out_addr).await.unwrap();
+					let client_stream = match TcpStream::connect(out_addr).await {
+						Ok(stream) => stream,
+						Err(e) => return Ok(handle_error(e.into()))
+					};
+
 					let io = TokioIo::new(client_stream);
 					let (mut sender, conn) =
 						hyper::client::conn::http1::handshake(io).await.unwrap();
@@ -277,10 +292,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						}
 					});
 
-					let qq = sender.send_request(req).await.unwrap();
-					let resp: Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> =
-						Ok(qq.map(|p| p.boxed()));
-					resp
+					let upstream_response = match sender.send_request(req).await {
+						Ok(resp) => resp,
+						Err(e) => return Ok(handle_error(e.into()))
+					};
+				
+					let response: Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> =
+						Ok(upstream_response.map(|p| p.boxed()));
+					response
 				}
 			}
 		});
@@ -295,4 +314,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 			}
 		});
 	}
+}
+
+//https://github.com/hyperium/hyper/blob/a9fa893f18c6409abae2e1dcbba0f4487df54d4f/examples/http_proxy.rs#L117
+fn empty() -> BoxBody<Bytes, hyper::Error> {
+	Empty::<Bytes>::new()
+		.map_err(|never| match never {})
+		.boxed()
 }
