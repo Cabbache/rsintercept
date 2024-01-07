@@ -47,6 +47,10 @@ struct Args {
 	#[arg(short = 'p', long, default_value_t = String::from("127.0.0.1:9100"))]
 	prometheus_bind_address: String,
 
+	/// Number of path segments to keep in metrics, 0 keeps all
+	#[arg(long = "trim", default_value_t = 0)]
+	trim_level: u16,
+
 	/// Host http header to use for upstream, it is left untouched by default
 	#[arg(long)]
 	http_host: Option<String>,
@@ -134,6 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	let override_host = args.http_host.is_some();
 	let http_host = args.http_host.unwrap_or("".to_string());
+	let trim_level: u16 = args.trim_level;
 
 	let listener = TcpListener::bind(args.bind_address.clone()).await?;
 
@@ -194,6 +199,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				};
 
 				let req_path = String::from(req.uri().path());
+				let req_path = match trim_level {
+					0 => req_path,
+					_ => format!(
+						"/{}",
+						req_path
+							.split('/')
+							.filter(|s| !s.is_empty())
+							.collect::<Vec<&str>>()
+							.into_iter()
+							.take(trim_level.into())
+							.collect::<Vec<&str>>()
+							.join("/")
+						)
+				};
 
 				if is_websocket {
 					let (response, incoming_fut) = upgrade(&mut req).unwrap();
