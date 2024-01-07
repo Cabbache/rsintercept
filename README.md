@@ -17,6 +17,8 @@ Options:
           Bind address [default: 127.0.0.1:8080]
   -p, --prometheus-bind-address <PROMETHEUS_BIND_ADDRESS>
           Prometheus bind address [default: 127.0.0.1:9100]
+      --trim <TRIM_LEVEL>
+          Number of path segments to keep in metrics, 0 keeps all [default: 0]
       --http-host <HTTP_HOST>
           Host http header to use for upstream, it is left untouched by default
   -h, --help
