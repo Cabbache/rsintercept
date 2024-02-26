@@ -10,22 +10,24 @@ use std::net::ToSocketAddrs;
 use warp::Filter;
 
 use http_body_util::combinators::BoxBody;
-use http_body_util::Empty;
 use http_body_util::BodyExt;
+use http_body_util::Empty;
 use hyper::body::Bytes;
+use hyper::body::Incoming;
 use hyper::header::HeaderValue;
 use hyper::header::HOST;
 use hyper::upgrade::Upgraded;
 use hyper::StatusCode;
-use hyper::body::Incoming;
 use hyper::{Request, Response};
 
 use std::future::Future;
 
-use fastwebsockets::upgrade::{upgrade, is_upgrade_request};
-use fastwebsockets::{handshake, FragmentCollectorRead, OpCode, WebSocket, WebSocketError};
+use fastwebsockets::upgrade::{is_upgrade_request, upgrade};
+use fastwebsockets::{handshake, FragmentCollectorRead, Frame, OpCode, WebSocket, WebSocketError};
 
-use prometheus::{register_counter_vec, register_counter, CounterVec, Counter, Encoder, Opts, TextEncoder};
+use prometheus::{
+	register_counter, register_counter_vec, Counter, CounterVec, Encoder, Opts, TextEncoder,
+};
 
 use anyhow::Result;
 
@@ -91,14 +93,18 @@ impl Metrics {
 		)
 		.unwrap();
 
-		let websocket_fail = register_counter!(
-			Opts::new("websocket_fail", "total websocket requests that could not be upgraded").namespace(namespace)
+		let websocket_fail = register_counter!(Opts::new(
+			"websocket_fail",
+			"total websocket requests that could not be upgraded"
 		)
+		.namespace(namespace))
 		.unwrap();
 
-		let non_websocket_fail = register_counter!(
-			Opts::new("non_websocket_fail", "total non websocket requests that upstream could not handle").namespace(namespace)
+		let non_websocket_fail = register_counter!(Opts::new(
+			"non_websocket_fail",
+			"total non websocket requests that upstream could not handle"
 		)
+		.namespace(namespace))
 		.unwrap();
 
 		Metrics {
@@ -143,8 +149,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let listener = TcpListener::bind(args.bind_address.clone()).await?;
 
 	let out_addr = args
-		.upstream_address.
-		to_socket_addrs()
+		.upstream_address
+		.to_socket_addrs()
 		.expect("Unable to parse upstream address")
 		.next()
 		.expect("Unable to parse upstream address");
@@ -167,7 +173,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		.expect("Invalid bind address for prometheus");
 
 	tokio::task::spawn(async move {
-		println!("Prometheus exporter listening on {}", args.prometheus_bind_address.clone());
+		println!(
+			"Prometheus exporter listening on {}",
+			args.prometheus_bind_address.clone()
+		);
 		warp::serve(prometheus_route).run(prom_addr).await;
 	});
 
@@ -211,7 +220,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 							.take(trim_level.into())
 							.collect::<Vec<&str>>()
 							.join("/")
-						)
+					),
 				};
 
 				if is_websocket {
@@ -223,27 +232,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						Ok(ws) => ws,
 						Err(e) => {
 							mtr.lock().await.websocket_fail.inc();
-							return Ok(handle_error(e.into()))
+							return Ok(handle_error(e.into()));
 						}
 					};
 
 					tokio::task::spawn(async move {
 						let incoming_ws = incoming_fut.await.unwrap();
 
-						mtr.lock().await.websocket_sessions.with_label_values(&[&req_path]).inc();
+						mtr.lock()
+							.await
+							.websocket_sessions
+							.with_label_values(&[&req_path])
+							.inc();
 
-						let (incoming_rx, mut incoming_tx) =
+						let (incoming_rx, incoming_tx) =
 							incoming_ws.split(|ws| tokio::io::split(ws));
-						let (outgoing_rx, mut outgoing_tx) =
+						let (outgoing_rx, outgoing_tx) =
 							outgoing_ws.split(|ws| tokio::io::split(ws));
 						let mut incoming_rx = FragmentCollectorRead::new(incoming_rx);
 						let mut outgoing_rx = FragmentCollectorRead::new(outgoing_rx);
 
+						let incoming_tx = Arc::new(Mutex::new(incoming_tx));
+						let outgoing_tx = Arc::new(Mutex::new(outgoing_tx));
+
+						let incoming_tx_clone1 = incoming_tx.clone();
+						let outgoing_tx_clone1 = outgoing_tx.clone();
+
+						let incoming_tx_clone2 = incoming_tx.clone();
+						let outgoing_tx_clone2 = outgoing_tx.clone();
+
 						tokio::spawn(async move {
 							while let Ok(frame) = incoming_rx
 								.read_frame::<_, WebSocketError>(&mut move |_| async {
-									println!("Connection closed");
-									Ok::<(), WebSocketError>(())
+									Err::<(), WebSocketError>(WebSocketError::ConnectionClosed)
 								})
 								.await
 							{
@@ -256,11 +277,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 								match frame.opcode {
 									OpCode::Close => break,
 									OpCode::Text | OpCode::Binary => {
-										mtr.lock().await
+										mtr.lock()
+											.await
 											.websocket_messages
 											.with_label_values(&[&req_path])
 											.inc();
-										if let Err(e) = outgoing_tx.write_frame(frame).await {
+										if let Err(e) =
+											outgoing_tx_clone1.lock().await.write_frame(frame).await
+										{
 											eprintln!("Error sending frame: {}", e);
 											break;
 										}
@@ -268,13 +292,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 									_ => {}
 								}
 							}
+							outgoing_tx_clone1
+								.lock()
+								.await
+								.write_frame(Frame::close(1000, b"remote connection terminated"))
+								.await
+								.unwrap();
+							incoming_tx_clone2
+								.lock()
+								.await
+								.write_frame(Frame::close(1000, b"remote connection terminated"))
+								.await
+								.unwrap();
+							println!("Closed client connection");
 						});
 
 						tokio::spawn(async move {
 							while let Ok(frame) = outgoing_rx
 								.read_frame::<_, WebSocketError>(&mut move |_| async {
-									println!("Connection closed");
-									Ok::<(), WebSocketError>(())
+									Err::<(), WebSocketError>(WebSocketError::ConnectionClosed)
 								})
 								.await
 							{
@@ -287,7 +323,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 								match frame.opcode {
 									OpCode::Close => break,
 									OpCode::Text | OpCode::Binary => {
-										if let Err(e) = incoming_tx.write_frame(frame).await {
+										if let Err(e) =
+											incoming_tx_clone1.lock().await.write_frame(frame).await
+										{
 											eprintln!("Error sending frame: {}", e);
 											break;
 										}
@@ -295,6 +333,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 									_ => {}
 								}
 							}
+							outgoing_tx_clone2
+								.lock()
+								.await
+								.write_frame(Frame::close(1000, b"remote connection terminated"))
+								.await
+								.unwrap();
+							incoming_tx_clone1
+								.lock()
+								.await
+								.write_frame(Frame::close(1000, b"remote connection terminated"))
+								.await
+								.unwrap();
+							println!("Closed server connection");
 						});
 					});
 
@@ -304,7 +355,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						Ok(stream) => stream,
 						Err(e) => {
 							mtr.lock().await.non_websocket_fail.inc();
-							return Ok(handle_error(e.into()))
+							return Ok(handle_error(e.into()));
 						}
 					};
 
@@ -321,12 +372,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						Ok(resp) => resp,
 						Err(e) => {
 							mtr.lock().await.non_websocket_fail.inc();
-							return Ok(handle_error(e.into()))
+							return Ok(handle_error(e.into()));
 						}
 					};
 
-					mtr.lock().await.non_websocket.with_label_values(&[&req_path]).inc();
-				
+					mtr.lock()
+						.await
+						.non_websocket
+						.with_label_values(&[&req_path])
+						.inc();
+
 					let response: Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> =
 						Ok(upstream_response.map(|p| p.boxed()));
 					response
