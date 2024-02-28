@@ -263,8 +263,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 						tokio::spawn(async move {
 							while let Ok(frame) = incoming_rx
-								.read_frame::<_, WebSocketError>(&mut move |_| async {
-									Err::<(), WebSocketError>(WebSocketError::ConnectionClosed)
+								.read_frame::<_, WebSocketError>(&mut move |smth| async move {
+									println!("err, from client: {:?}", smth.opcode);
+									match smth.opcode {
+										OpCode::Close => Err::<(), WebSocketError>(
+											WebSocketError::ConnectionClosed,
+										),
+										_ => Ok::<(), WebSocketError>(()),
+									}
 								})
 								.await
 							{
@@ -295,13 +301,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 							outgoing_tx_clone1
 								.lock()
 								.await
-								.write_frame(Frame::close(1000, b"remote connection terminated"))
+								.write_frame(Frame::close(1000, b""))
 								.await
 								.unwrap();
 							incoming_tx_clone2
 								.lock()
 								.await
-								.write_frame(Frame::close(1000, b"remote connection terminated"))
+								.write_frame(Frame::close(1000, b""))
 								.await
 								.unwrap();
 							println!("Closed client connection");
@@ -309,8 +315,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 						tokio::spawn(async move {
 							while let Ok(frame) = outgoing_rx
-								.read_frame::<_, WebSocketError>(&mut move |_| async {
-									Err::<(), WebSocketError>(WebSocketError::ConnectionClosed)
+								.read_frame::<_, WebSocketError>(&mut move |smth| async move {
+									println!("err, from server {:?}", smth.opcode);
+									match smth.opcode {
+										OpCode::Close => Err::<(), WebSocketError>(
+											WebSocketError::ConnectionClosed,
+										),
+										_ => Ok::<(), WebSocketError>(()),
+									}
 								})
 								.await
 							{
@@ -336,13 +348,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 							outgoing_tx_clone2
 								.lock()
 								.await
-								.write_frame(Frame::close(1000, b"remote connection terminated"))
+								.write_frame(Frame::close(1000, b""))
 								.await
 								.unwrap();
 							incoming_tx_clone1
 								.lock()
 								.await
-								.write_frame(Frame::close(1000, b"remote connection terminated"))
+								.write_frame(Frame::close(1000, b""))
 								.await
 								.unwrap();
 							println!("Closed server connection");
