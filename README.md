@@ -21,6 +21,8 @@ Options:
           Number of path segments to keep in metrics, 0 keeps all [default: 0]
       --http-host <HTTP_HOST>
           Host http header to use for upstream, it is left untouched by default
+  -s, --ignore-status <IGNORE_STATUS>
+          If specified, metrics will not include requests for which the response status is this code
   -h, --help
           Print help
   -V, --version
