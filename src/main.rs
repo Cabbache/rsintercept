@@ -56,6 +56,10 @@ struct Args {
 	/// Host http header to use for upstream, it is left untouched by default
 	#[arg(long)]
 	http_host: Option<String>,
+
+	/// If specified, metrics will not include requests for which the response status is this code
+	#[arg(short = 's', long)]
+	ignore_status: Option<u16>,
 }
 
 struct Metrics {
@@ -147,6 +151,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let trim_level: u16 = args.trim_level;
 
 	let listener = TcpListener::bind(args.bind_address.clone()).await?;
+
+	let ignore_status = args.ignore_status;
 
 	let out_addr = args
 		.upstream_address
@@ -388,11 +394,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						}
 					};
 
-					mtr.lock()
-						.await
-						.non_websocket
-						.with_label_values(&[&req_path])
-						.inc();
+					match ignore_status {
+						Some(status) if status == upstream_response.status() => {}
+						_ => {
+							mtr.lock().await.non_websocket.with_label_values(&[&req_path]).inc();
+						}
+					}
 
 					let response: Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> =
 						Ok(upstream_response.map(|p| p.boxed()));
