@@ -13,3 +13,6 @@ prometheus = "0.13.3"
 warp = "0.3.6"
 anyhow = "1.0.75"
 clap = { version = "4.4.11", features = ["derive"] }
+pki-types = { package = "rustls-pki-types", version = "1" }
+rustls = "0.23.3"
+rustls-pemfile = "2.1.1"

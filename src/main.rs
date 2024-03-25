@@ -6,6 +6,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
 use std::net::ToSocketAddrs;
+use std::{fs, io};
 
 use warp::Filter;
 
@@ -19,6 +20,8 @@ use hyper::header::HOST;
 use hyper::upgrade::Upgraded;
 use hyper::StatusCode;
 use hyper::{Request, Response};
+
+use pki_types::{CertificateDer, PrivateKeyDer};
 
 use std::future::Future;
 
@@ -60,6 +63,14 @@ struct Args {
 	/// If specified, metrics will not include requests for which the response status is this code
 	#[arg(short = 's', long)]
 	ignore_status: Option<u16>,
+
+	/// tls certificate path
+	#[arg(long)]
+	tls_cert: Option<String>,
+
+	/// tls private key path
+	#[arg(long)]
+	tls_pkey: Option<String>,
 }
 
 struct Metrics {
@@ -149,6 +160,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let override_host = args.http_host.is_some();
 	let http_host = args.http_host.unwrap_or("".to_string());
 	let trim_level: u16 = args.trim_level;
+
+	assert!(args.tls_cert.is_some() == args.tls_pkey.is_some(), "tls parameters should be either both provided or neither provided");
 
 	let listener = TcpListener::bind(args.bind_address.clone()).await?;
 
@@ -425,4 +438,30 @@ fn empty() -> BoxBody<Bytes, hyper::Error> {
 	Empty::<Bytes>::new()
 		.map_err(|never| match never {})
 		.boxed()
+}
+
+//https://github.com/rustls/hyper-rustls/blob/4030f86a95d7c3d2ebe87c7da86b5a8bde2857a1/examples/server.rs#L114
+fn load_certs(filename: &str) -> io::Result<Vec<CertificateDer<'static>>> {
+    // Open certificate file.
+    let certfile = fs::File::open(filename)
+        .map_err(|e| error(format!("failed to open {}: {}", filename, e)))?;
+    let mut reader = io::BufReader::new(certfile);
+
+    // Load and return certificate.
+    rustls_pemfile::certs(&mut reader).collect()
+}
+
+// Load private key from file.
+fn load_private_key(filename: &str) -> io::Result<PrivateKeyDer<'static>> {
+    // Open keyfile.
+    let keyfile = fs::File::open(filename)
+        .map_err(|e| error(format!("failed to open {}: {}", filename, e)))?;
+    let mut reader = io::BufReader::new(keyfile);
+
+    // Load and return a single private key.
+    rustls_pemfile::private_key(&mut reader).map(|key| key.unwrap())
+}
+
+fn error(err: String) -> io::Error {
+    io::Error::new(io::ErrorKind::Other, err)
 }
