@@ -4,6 +4,7 @@ use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
+use tokio_rustls::TlsAcceptor;
 
 use std::net::ToSocketAddrs;
 use std::{fs, io};
@@ -20,6 +21,8 @@ use hyper::header::HOST;
 use hyper::upgrade::Upgraded;
 use hyper::StatusCode;
 use hyper::{Request, Response};
+
+use rustls::ServerConfig;
 
 use pki_types::{CertificateDer, PrivateKeyDer};
 
@@ -41,7 +44,7 @@ use std::sync::Arc;
 #[command(author, version, about, long_about = None)]
 struct Args {
 	/// Upstream host address
-	#[arg(short = 'h', long)]
+	#[arg(short = 'u', long)]
 	upstream_address: String,
 
 	/// Bind address
@@ -161,7 +164,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let http_host = args.http_host.unwrap_or("".to_string());
 	let trim_level: u16 = args.trim_level;
 
-	assert!(args.tls_cert.is_some() == args.tls_pkey.is_some(), "tls parameters should be either both provided or neither provided");
+	assert!(
+		args.tls_cert.is_some() == args.tls_pkey.is_some(),
+		"tls parameters should be either both provided or neither provided"
+	);
+
+	if args.tls_cert.is_some() {
+		let tls_certs = load_certs(&args.tls_cert.unwrap())?;
+		let tls_pkey = load_private_key(&args.tls_pkey.unwrap())?;
+
+		let mut server_config = ServerConfig::builder()
+			.with_no_client_auth()
+			.with_single_cert(tls_certs, tls_pkey)
+			.map_err(|e| error(e.to_string()))?;
+
+		server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
+		let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
+	}
 
 	let listener = TcpListener::bind(args.bind_address.clone()).await?;
 
@@ -410,7 +429,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					match ignore_status {
 						Some(status) if status == upstream_response.status() => {}
 						_ => {
-							mtr.lock().await.non_websocket.with_label_values(&[&req_path]).inc();
+							mtr.lock()
+								.await
+								.non_websocket
+								.with_label_values(&[&req_path])
+								.inc();
 						}
 					}
 
@@ -442,26 +465,26 @@ fn empty() -> BoxBody<Bytes, hyper::Error> {
 
 //https://github.com/rustls/hyper-rustls/blob/4030f86a95d7c3d2ebe87c7da86b5a8bde2857a1/examples/server.rs#L114
 fn load_certs(filename: &str) -> io::Result<Vec<CertificateDer<'static>>> {
-    // Open certificate file.
-    let certfile = fs::File::open(filename)
-        .map_err(|e| error(format!("failed to open {}: {}", filename, e)))?;
-    let mut reader = io::BufReader::new(certfile);
+	// Open certificate file.
+	let certfile = fs::File::open(filename)
+		.map_err(|e| error(format!("failed to open {}: {}", filename, e)))?;
+	let mut reader = io::BufReader::new(certfile);
 
-    // Load and return certificate.
-    rustls_pemfile::certs(&mut reader).collect()
+	// Load and return certificate.
+	rustls_pemfile::certs(&mut reader).collect()
 }
 
 // Load private key from file.
 fn load_private_key(filename: &str) -> io::Result<PrivateKeyDer<'static>> {
-    // Open keyfile.
-    let keyfile = fs::File::open(filename)
-        .map_err(|e| error(format!("failed to open {}: {}", filename, e)))?;
-    let mut reader = io::BufReader::new(keyfile);
+	// Open keyfile.
+	let keyfile = fs::File::open(filename)
+		.map_err(|e| error(format!("failed to open {}: {}", filename, e)))?;
+	let mut reader = io::BufReader::new(keyfile);
 
-    // Load and return a single private key.
-    rustls_pemfile::private_key(&mut reader).map(|key| key.unwrap())
+	// Load and return a single private key.
+	rustls_pemfile::private_key(&mut reader).map(|key| key.unwrap())
 }
 
 fn error(err: String) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, err)
+	io::Error::new(io::ErrorKind::Other, err)
 }
