@@ -185,22 +185,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		tls_acceptor = Some(TlsAcceptor::from(Arc::new(server_config)));
 	}
 
-	//	let tls_acceptor = args.tls_cert.as_ref().zip(args.tls_pkey.as_ref())
-	//    .map(|(cert_path, pkey_path)| {
-	//        let tls_certs = load_certs(cert_path)?;
-	//        let tls_pkey = load_private_key(pkey_path)?;
-	//
-	//        let mut server_config = ServerConfig::builder()
-	//            .with_no_client_auth()
-	//            .with_single_cert(tls_certs, tls_pkey)
-	//            .map_err(|e| error(e.to_string()))?;
-	//
-	//
-	//				//server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
-	//				server_config.alpn_protocols = vec![b"http/1.1".to_vec(), b"http/1.0".to_vec()];
-	//        Ok(TlsAcceptor::from(Arc::new(server_config)))
-	//    }).transpose()?;  // transpose() converts Option<Result<T, E>> to Result<Option<T>, E>
-
 	let listener = TcpListener::bind(args.bind_address.clone()).await?;
 
 	let ignore_status = args.ignore_status;
@@ -466,7 +450,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 			}
 		});
 
-		let tls_acceptor = tls_acceptor.clone().map(|v| v.clone());
+		let tls_acceptor = tls_acceptor.clone();
 		match tls_acceptor {
 			Some(acceptor) => tokio::task::spawn(async move {
 				let stream = match acceptor.accept(tcp_stream).await {
