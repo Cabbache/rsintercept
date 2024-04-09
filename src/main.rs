@@ -1,6 +1,6 @@
 use clap::Parser;
-use hyper::{server::conn::http1, service::service_fn};
-use hyper_util::rt::TokioIo;
+use hyper::{service::service_fn};
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
@@ -11,6 +11,7 @@ use std::{fs, io};
 
 use warp::Filter;
 
+use hyper_util::server::conn::auto::Builder;
 use http_body_util::combinators::BoxBody;
 use http_body_util::BodyExt;
 use http_body_util::Empty;
@@ -166,10 +167,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	assert!(
 		args.tls_cert.is_some() == args.tls_pkey.is_some(),
-		"tls parameters should be either both provided or neither provided"
+		"tls cert and key should be either both provided or neither provided"
 	);
 
-	if args.tls_cert.is_some() {
+	//if args.tls_cert.is_some() {
 		let tls_certs = load_certs(&args.tls_cert.unwrap())?;
 		let tls_pkey = load_private_key(&args.tls_pkey.unwrap())?;
 
@@ -178,9 +179,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 			.with_single_cert(tls_certs, tls_pkey)
 			.map_err(|e| error(e.to_string()))?;
 
-		server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
+		//server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
+		server_config.alpn_protocols = vec![b"http/1.1".to_vec(), b"http/1.0".to_vec()];
 		let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
-	}
+	//}
 
 	let listener = TcpListener::bind(args.bind_address.clone()).await?;
 
@@ -219,8 +221,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	});
 
 	loop {
-		let (stream, _) = listener.accept().await?;
-		let io = TokioIo::new(stream);
+		let (tcp_stream, _) = listener.accept().await?;
+
+		let tls_acceptor = tls_acceptor.clone();
 
 		let metrics_clone = metrics.clone();
 		let http_host = http_host.clone();
@@ -275,7 +278,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					};
 
 					tokio::task::spawn(async move {
-						let incoming_ws = incoming_fut.await.unwrap();
+						let incoming_ws = match incoming_fut.await{
+							Ok(ws) => ws,
+							Err(e) => {
+								eprintln!("error on ws: {}", e);
+								return;
+							}
+						};
 
 						mtr.lock()
 							.await
@@ -383,18 +392,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 									_ => {}
 								}
 							}
-							outgoing_tx_clone2
+							let _ = outgoing_tx_clone2
 								.lock()
 								.await
 								.write_frame(Frame::close(1000, b""))
-								.await
-								.unwrap();
-							incoming_tx_clone1
+								.await;
+							let _ = incoming_tx_clone1
 								.lock()
 								.await
 								.write_frame(Frame::close(1000, b""))
-								.await
-								.unwrap();
+								.await;
 							println!("Closed server connection");
 						});
 					});
@@ -445,9 +452,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		});
 
 		tokio::task::spawn(async move {
-			if let Err(err) = http1::Builder::new()
-				.serve_connection(io, service)
-				.with_upgrades()
+			let tls_stream = match tls_acceptor.accept(tcp_stream).await {
+				Ok(stream) => stream,
+				Err(e) => {
+					eprintln!("error on tls: {}",e);
+					return;
+				}
+			};
+			if let Err(err) = Builder::new(TokioExecutor::new())
+				.serve_connection_with_upgrades(TokioIo::new(tls_stream), service)
+				//.with_upgrades()
 				.await
 			{
 				eprintln!("Failed to serve the connection: {:?}", err);
