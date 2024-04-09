@@ -11,7 +11,7 @@ CLI upstream http/ws proxy
 Usage: rsintercept [OPTIONS] --upstream-address <UPSTREAM_ADDRESS>
 
 Options:
-  -h, --upstream-address <UPSTREAM_ADDRESS>
+  -u, --upstream-address <UPSTREAM_ADDRESS>
           Upstream host address
   -l, --bind-address <BIND_ADDRESS>
           Bind address [default: 127.0.0.1:8080]
@@ -23,6 +23,10 @@ Options:
           Host http header to use for upstream, it is left untouched by default
   -s, --ignore-status <IGNORE_STATUS>
           If specified, metrics will not include requests for which the response status is this code
+      --tls-cert <TLS_CERT>
+          tls certificate path
+      --tls-pkey <TLS_PKEY>
+          tls private key path
   -h, --help
           Print help
   -V, --version
@@ -56,5 +60,5 @@ rs_intercept_websocket_sessions_total{path="/some-path"} 1
 
 ## Example usage
 ```console
-cargo run --release -- -h ws.ifelse.io:80 --http-host ws.ifelse.io
+cargo run --release -- -u ws.ifelse.io:80 --http-host ws.ifelse.io
 ```
