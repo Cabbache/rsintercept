@@ -1,5 +1,5 @@
 use clap::Parser;
-use hyper::{service::service_fn};
+use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
@@ -11,7 +11,6 @@ use std::{fs, io};
 
 use warp::Filter;
 
-use hyper_util::server::conn::auto::Builder;
 use http_body_util::combinators::BoxBody;
 use http_body_util::BodyExt;
 use http_body_util::Empty;
@@ -22,6 +21,7 @@ use hyper::header::HOST;
 use hyper::upgrade::Upgraded;
 use hyper::StatusCode;
 use hyper::{Request, Response};
+use hyper_util::server::conn::auto::Builder;
 
 use rustls::ServerConfig;
 
@@ -170,7 +170,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		"tls cert and key should be either both provided or neither provided"
 	);
 
-	//if args.tls_cert.is_some() {
+	let mut tls_acceptor: Option<TlsAcceptor> = None;
+	if args.tls_cert.is_some() {
 		let tls_certs = load_certs(&args.tls_cert.unwrap())?;
 		let tls_pkey = load_private_key(&args.tls_pkey.unwrap())?;
 
@@ -181,8 +182,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 		//server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
 		server_config.alpn_protocols = vec![b"http/1.1".to_vec(), b"http/1.0".to_vec()];
-		let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
-	//}
+		tls_acceptor = Some(TlsAcceptor::from(Arc::new(server_config)));
+	}
+
+	//	let tls_acceptor = args.tls_cert.as_ref().zip(args.tls_pkey.as_ref())
+	//    .map(|(cert_path, pkey_path)| {
+	//        let tls_certs = load_certs(cert_path)?;
+	//        let tls_pkey = load_private_key(pkey_path)?;
+	//
+	//        let mut server_config = ServerConfig::builder()
+	//            .with_no_client_auth()
+	//            .with_single_cert(tls_certs, tls_pkey)
+	//            .map_err(|e| error(e.to_string()))?;
+	//
+	//
+	//				//server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
+	//				server_config.alpn_protocols = vec![b"http/1.1".to_vec(), b"http/1.0".to_vec()];
+	//        Ok(TlsAcceptor::from(Arc::new(server_config)))
+	//    }).transpose()?;  // transpose() converts Option<Result<T, E>> to Result<Option<T>, E>
 
 	let listener = TcpListener::bind(args.bind_address.clone()).await?;
 
@@ -222,8 +239,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	loop {
 		let (tcp_stream, _) = listener.accept().await?;
-
-		let tls_acceptor = tls_acceptor.clone();
 
 		let metrics_clone = metrics.clone();
 		let http_host = http_host.clone();
@@ -278,7 +293,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					};
 
 					tokio::task::spawn(async move {
-						let incoming_ws = match incoming_fut.await{
+						let incoming_ws = match incoming_fut.await {
 							Ok(ws) => ws,
 							Err(e) => {
 								eprintln!("error on ws: {}", e);
@@ -451,22 +466,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 			}
 		});
 
-		tokio::task::spawn(async move {
-			let tls_stream = match tls_acceptor.accept(tcp_stream).await {
-				Ok(stream) => stream,
-				Err(e) => {
-					eprintln!("error on tls: {}",e);
-					return;
+		let tls_acceptor = tls_acceptor.clone().map(|v| v.clone());
+		match tls_acceptor {
+			Some(acceptor) => tokio::task::spawn(async move {
+				let stream = match acceptor.accept(tcp_stream).await {
+					Ok(stream) => stream,
+					Err(e) => {
+						eprintln!("error on tls: {}", e);
+						return;
+					}
+				};
+				if let Err(err) = Builder::new(TokioExecutor::new())
+					.serve_connection_with_upgrades(TokioIo::new(stream), service)
+					.await
+				{
+					eprintln!("Failed to serve the connection: {:?}", err);
 				}
-			};
-			if let Err(err) = Builder::new(TokioExecutor::new())
-				.serve_connection_with_upgrades(TokioIo::new(tls_stream), service)
-				//.with_upgrades()
-				.await
-			{
-				eprintln!("Failed to serve the connection: {:?}", err);
-			}
-		});
+			}),
+			_ => tokio::task::spawn(async move {
+				if let Err(err) = Builder::new(TokioExecutor::new())
+					.serve_connection_with_upgrades(TokioIo::new(tcp_stream), service)
+					.await
+				{
+					eprintln!("Failed to serve the connection: {:?}", err);
+				}
+			}),
+		};
 	}
 }
 
