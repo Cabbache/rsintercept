@@ -75,6 +75,10 @@ struct Args {
 	/// tls private key path
 	#[arg(long)]
 	tls_pkey: Option<String>,
+
+	/// print websocket messages to stdout
+	#[arg(short = 'v', long)]
+	verbose: bool,
 }
 
 struct Metrics {
@@ -164,6 +168,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let override_host = args.http_host.is_some();
 	let http_host = args.http_host.unwrap_or("".to_string());
 	let trim_level: u16 = args.trim_level;
+	let verbose = args.verbose;
 
 	assert!(
 		args.tls_cert.is_some() == args.tls_pkey.is_some(),
@@ -325,7 +330,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 									Ok(p) => p,
 									Err(_) => return,
 								};
-								println!("↑ {}", decoded_payload);
+								if verbose {
+									println!("↑ {}", decoded_payload);
+								}
 								match frame.opcode {
 									OpCode::Close => break,
 									OpCode::Text | OpCode::Binary => {
@@ -377,7 +384,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 									Ok(p) => p,
 									Err(_) => return,
 								};
-								println!("↓ {}", decoded_payload);
+								if verbose {
+									println!("↓ {}", decoded_payload);
+								}
 								match frame.opcode {
 									OpCode::Close => break,
 									OpCode::Text | OpCode::Binary => {
