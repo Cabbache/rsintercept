@@ -79,6 +79,10 @@ struct Args {
 	/// print websocket messages to stdout
 	#[arg(short = 'v', long)]
 	verbose: bool,
+
+	/// print connecting IP to stdout
+	#[arg(short = 'j', long)]
+	print_ip: bool,
 }
 
 struct Metrics {
@@ -169,6 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let http_host = args.http_host.unwrap_or("".to_string());
 	let trim_level: u16 = args.trim_level;
 	let verbose = args.verbose;
+	let show_ip = args.print_ip;
 
 	assert!(
 		args.tls_cert.is_some() == args.tls_pkey.is_some(),
@@ -228,6 +233,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	loop {
 		let (tcp_stream, _) = listener.accept().await?;
+
+		if show_ip {
+			match tcp_stream.peer_addr() {
+				Ok(addr) => println!("Received connection from {}", addr),
+				Err(msg) => eprintln!("Could not show ip: {}", msg)
+			}
+		}
 
 		let metrics_clone = metrics.clone();
 		let http_host = http_host.clone();

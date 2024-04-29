@@ -29,6 +29,8 @@ Options:
           tls private key path
   -v, --verbose
           print websocket messages to stdout
+  -j, --print-ip
+          print connecting IP to stdout
   -h, --help
           Print help
   -V, --version
