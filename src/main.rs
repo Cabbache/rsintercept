@@ -7,6 +7,8 @@ use tokio::sync::Mutex;
 use tokio_rustls::TlsAcceptor;
 
 use std::net::ToSocketAddrs;
+use std::time::{SystemTime, UNIX_EPOCH};
+use chrono::prelude::*;
 use std::{fs, io};
 
 use warp::Filter;
@@ -39,6 +41,12 @@ use prometheus::{
 use anyhow::Result;
 
 use std::sync::Arc;
+
+macro_rules! writelog {
+	($($arg:tt)*) => {
+		write_log(format!($($arg)*))
+	};
+}
 
 /// CLI upstream http/ws proxy
 #[derive(Parser, Debug)]
@@ -215,8 +223,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		String::from_utf8(buffer).unwrap()
 	});
 
-	println!("Listening on {}", args.bind_address);
-	println!("Proxying to {}", args.upstream_address);
+	writelog!("Listening on {}", args.bind_address);
+	writelog!("Proxying to {}", args.upstream_address);
 
 	let prom_addr: SocketAddr = args
 		.prometheus_bind_address
@@ -224,7 +232,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		.expect("Invalid bind address for prometheus");
 
 	tokio::task::spawn(async move {
-		println!(
+		writelog!(
 			"Prometheus exporter listening on {}",
 			args.prometheus_bind_address.clone()
 		);
@@ -236,8 +244,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 		if show_ip {
 			match tcp_stream.peer_addr() {
-				Ok(addr) => println!("Received connection from {}", addr),
-				Err(msg) => eprintln!("Could not show ip: {}", msg)
+				Ok(addr) => writelog!("Received connection from {}", addr),
+				Err(msg) => writelog!("Could not show ip: {}", msg)
 			}
 		}
 
@@ -257,7 +265,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				}
 
 				let handle_error = |e: anyhow::Error| {
-					eprintln!("{}", e);
+					writelog!("{}", e);
 					Response::builder()
 						.status(StatusCode::SERVICE_UNAVAILABLE)
 						.body(empty())
@@ -297,7 +305,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						let incoming_ws = match incoming_fut.await {
 							Ok(ws) => ws,
 							Err(e) => {
-								eprintln!("error on ws: {}", e);
+								writelog!("error on ws: {}", e);
 								return;
 							}
 						};
@@ -327,7 +335,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						tokio::spawn(async move {
 							while let Ok(frame) = incoming_rx
 								.read_frame::<_, WebSocketError>(&mut move |smth| async move {
-									println!("err, from client: {:?}", smth.opcode);
+									writelog!("err, from client: {:?}", smth.opcode);
 									match smth.opcode {
 										OpCode::Close => Err::<(), WebSocketError>(
 											WebSocketError::ConnectionClosed,
@@ -343,7 +351,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 									Err(_) => return,
 								};
 								if verbose {
-									println!("↑ {}", decoded_payload);
+									writelog!("↑ {}", decoded_payload);
 								}
 								match frame.opcode {
 									OpCode::Close => break,
@@ -356,7 +364,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 										if let Err(e) =
 											outgoing_tx_clone1.lock().await.write_frame(frame).await
 										{
-											eprintln!("Error sending frame: {}", e);
+											writelog!("Error sending frame: {}", e);
 											break;
 										}
 									}
@@ -375,13 +383,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 								.write_frame(Frame::close(1000, b""))
 								.await
 								.unwrap();
-							println!("Closed client connection");
+							writelog!("Closed client connection");
 						});
 
 						tokio::spawn(async move {
 							while let Ok(frame) = outgoing_rx
 								.read_frame::<_, WebSocketError>(&mut move |smth| async move {
-									println!("err, from server {:?}", smth.opcode);
+									writelog!("err, from server {:?}", smth.opcode);
 									match smth.opcode {
 										OpCode::Close => Err::<(), WebSocketError>(
 											WebSocketError::ConnectionClosed,
@@ -397,7 +405,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 									Err(_) => return,
 								};
 								if verbose {
-									println!("↓ {}", decoded_payload);
+									writelog!("↓ {}", decoded_payload);
 								}
 								match frame.opcode {
 									OpCode::Close => break,
@@ -405,7 +413,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 										if let Err(e) =
 											incoming_tx_clone1.lock().await.write_frame(frame).await
 										{
-											eprintln!("Error sending frame: {}", e);
+											writelog!("Error sending frame: {}", e);
 											break;
 										}
 									}
@@ -422,7 +430,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 								.await
 								.write_frame(Frame::close(1000, b""))
 								.await;
-							println!("Closed server connection");
+							writelog!("Closed server connection");
 						});
 					});
 
@@ -441,7 +449,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						hyper::client::conn::http1::handshake(io).await.unwrap();
 					tokio::task::spawn(async move {
 						if let Err(err) = conn.await {
-							eprintln!("Connection failed: {:?}", err);
+							writelog!("Connection failed: {:?}", err);
 						}
 					});
 
@@ -477,7 +485,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				let stream = match acceptor.accept(tcp_stream).await {
 					Ok(stream) => stream,
 					Err(e) => {
-						eprintln!("error on tls: {}", e);
+						writelog!("error on tls: {}", e);
 						return;
 					}
 				};
@@ -485,7 +493,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					.serve_connection_with_upgrades(TokioIo::new(stream), service)
 					.await
 				{
-					eprintln!("Failed to serve the connection: {:?}", err);
+					writelog!("Failed to serve the connection: {:?}", err);
 				}
 			}),
 			_ => tokio::task::spawn(async move {
@@ -493,7 +501,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					.serve_connection_with_upgrades(TokioIo::new(tcp_stream), service)
 					.await
 				{
-					eprintln!("Failed to serve the connection: {:?}", err);
+					writelog!("Failed to serve the connection: {:?}", err);
 				}
 			}),
 		};
@@ -531,4 +539,15 @@ fn load_private_key(filename: &str) -> io::Result<PrivateKeyDer<'static>> {
 
 fn error(err: String) -> io::Error {
 	io::Error::new(io::ErrorKind::Other, err)
+}
+
+fn write_log(msg: String) {
+	let start = SystemTime::now();
+	let timestamp = start
+		.duration_since(UNIX_EPOCH)
+		.expect("Time went backwards")
+		.as_secs();
+	let datetime = DateTime::from_timestamp(timestamp as i64, 0).unwrap();
+	let newdate = datetime.format("%Y-%m-%d %H:%M:%S");
+	println!("[{}]: {}", newdate, msg);
 }
