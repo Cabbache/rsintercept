@@ -31,6 +31,8 @@ Options:
           print websocket messages to stdout
   -j, --print-ip
           print connecting IP to stdout
+      --drop-headers <DROP_HEADERS>...
+        
   -h, --help
           Print help
   -V, --version

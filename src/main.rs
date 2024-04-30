@@ -91,6 +91,9 @@ struct Args {
 	/// print connecting IP to stdout
 	#[arg(short = 'j', long)]
 	print_ip: bool,
+
+	#[clap(long, value_parser, num_args = 1.., value_delimiter = ' ')]
+	drop_headers: Vec<String>,
 }
 
 struct Metrics {
@@ -182,6 +185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let trim_level: u16 = args.trim_level;
 	let verbose = args.verbose;
 	let show_ip = args.print_ip;
+	let headers_remove = args.drop_headers;
 
 	assert!(
 		args.tls_cert.is_some() == args.tls_pkey.is_some(),
@@ -251,10 +255,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 		let metrics_clone = metrics.clone();
 		let http_host = http_host.clone();
+		let headers_remove = headers_remove.clone();
 
 		let service = service_fn(move |mut req| {
 			let http_host = http_host.clone();
 			let mtr = Arc::clone(&metrics_clone);
+			let headers_remove = headers_remove.clone();
 
 			let is_websocket = is_upgrade_request(&req);
 
@@ -453,13 +459,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						}
 					});
 
-					let upstream_response = match sender.send_request(req).await {
+					let mut upstream_response = match sender.send_request(req).await {
 						Ok(resp) => resp,
 						Err(e) => {
 							mtr.lock().await.non_websocket_fail.inc();
 							return Ok(handle_error(e.into()));
 						}
 					};
+
+					let hdrs = upstream_response.headers_mut();
+					for drop in headers_remove {
+						hdrs.remove(drop);
+					}
 
 					match ignore_status {
 						Some(status) if status == upstream_response.status() => {}
